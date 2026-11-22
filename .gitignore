@@ -1,0 +1,5 @@
+.venv/
+.build-tools/
+__pycache__/
+shell/dist/
+.qa-*

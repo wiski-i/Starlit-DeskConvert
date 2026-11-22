@@ -1,0 +1,22 @@
+# Arayüz
+customtkinter>=5.2.0
+tkinterdnd2>=0.4.2          # Sürükle-bırak (opsiyonel)
+
+# Görseller
+Pillow>=10.0.0
+pillow-heif>=0.13.0        # HEIC/HEIF desteği (opsiyonel)
+
+# Ses & Video (ffmpeg binary'sini paketler — sistem kurulumu gerekmez)
+imageio-ffmpeg>=0.4.9
+
+# Belgeler (pandoc binary'sini paketler)
+pypandoc-binary>=1.13
+
+# Tablo / Veri
+pandas>=2.0.0
+openpyxl>=3.1.0           # xlsx
+lxml>=4.9.0               # html/xml tabloları
+tabulate>=0.9.0          # markdown tablo çıktısı
+
+# Arşivler
+py7zr>=0.20.0             # 7z desteği (opsiyonel)
