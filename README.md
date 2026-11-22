@@ -108,3 +108,8 @@ Windows may require a development certificate in the computer's Trusted
 People store. Run `shell\register.ps1` after Windows trusts the signing
 certificate. It registers the package for the current account using the
 existing app directory as the external location.
+
+## License
+
+DeskConvert is licensed under the GNU General Public License, version 3
+only (`GPL-3.0-only`). See [LICENSE](LICENSE) for the full text.
