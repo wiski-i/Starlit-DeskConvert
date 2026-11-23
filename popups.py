@@ -18,8 +18,6 @@ class FormatPicker(ctk.CTkFrame):
         self.selected = "—"
         self.state = "normal"
         self._popup = None
-        self._highlight = 0
-        self._choices = []
         self._button = ctk.CTkButton(
             self, text="—", command=self._open, height=40, anchor="w", corner_radius=11,
             fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, font=font(14, "bold"),
@@ -68,18 +66,30 @@ class FormatPicker(ctk.CTkFrame):
         popup.transient(self.winfo_toplevel())
         shell = ctk.CTkFrame(popup, fg_color=PANEL, border_color=BORDER_H, border_width=1, corner_radius=11)
         shell.pack(fill="both", expand=True)
-        self._choices = []
-        for index, value in enumerate(self.values):
-            label = f"{value}   ✓" if value == self.selected else value
-            button = ctk.CTkButton(
-                shell, text=label, height=28, anchor="w", corner_radius=7, fg_color=PANEL,
-                hover_color=SURFACE_H, text_color=TEXT, font=font(12, "bold" if value == self.selected else "normal"),
-                command=lambda entry=value: self._choose(entry),
-            )
-            button.pack(fill="x", padx=6, pady=(5 if index == 0 else 1, 5 if index + 1 == len(self.values) else 1))
-            self._choices.append(button)
-        self._highlight = self.values.index(self.selected) if self.selected in self.values else 0
-        self._move(0)
+        items = tk.Listbox(
+            shell, height=min(11, len(self.values)), bg=PANEL, fg=TEXT,
+            selectbackground=SURFACE_H, selectforeground=TEXT, activestyle="none",
+            relief="flat", highlightthickness=0, exportselection=False, font=("Segoe UI", 11),
+        )
+        if len(self.values) > 11:
+            bar = ctk.CTkScrollbar(shell, command=items.yview)
+            bar.pack(side="right", fill="y", pady=6)
+            items.configure(yscrollcommand=bar.set)
+        items.pack(fill="both", expand=True, padx=6, pady=6)
+        items.insert("end", *self.values)
+        selected = self.values.index(self.selected) if self.selected in self.values else 0
+        items.selection_set(selected)
+        items.activate(selected)
+        items.see(selected)
+
+        def choose(_event=None):
+            choice = items.curselection()
+            if choice:
+                self._choose(self.values[choice[0]])
+            return "break"
+
+        items.bind("<ButtonRelease-1>", choose)
+        items.bind("<Return>", choose)
         popup.update_idletasks()
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() + 5
@@ -89,20 +99,11 @@ class FormatPicker(ctk.CTkFrame):
         # The anchor and requested size are already measured in screen pixels.
         tk.Wm.geometry(popup, f"{self.winfo_width()}x{height}{x:+d}{y:+d}")
         popup.bind("<Escape>", lambda _event: self._dismiss())
-        popup.bind("<Up>", lambda _event: self._move(-1))
-        popup.bind("<Down>", lambda _event: self._move(1))
-        popup.bind("<Return>", lambda _event: self._choose(self.values[self._highlight]))
         popup.bind("<Button-1>", self._outside_click, add="+")
         popup.deiconify()
         popup.wait_visibility()
         popup.grab_set()
-        popup.focus_force()
-
-    def _move(self, step):
-        self._choices[self._highlight].configure(fg_color=PANEL)
-        self._highlight = (self._highlight + step) % len(self._choices)
-        self._choices[self._highlight].configure(fg_color=SURFACE_H)
-        return "break"
+        items.focus_set()
 
     def _outside_click(self, event):
         popup = self._popup
@@ -121,7 +122,6 @@ class FormatPicker(ctk.CTkFrame):
         if self._popup:
             self._popup.destroy()
             self._popup = None
-            self._choices = []
             self.focus_set()
 
 

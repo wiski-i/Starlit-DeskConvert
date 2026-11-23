@@ -4,12 +4,14 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from i18n import Message
 
 from . import detect as _detect
 from . import registry
+from .output_names import destination
 
 
 def analyze(path: str) -> dict:
@@ -17,15 +19,18 @@ def analyze(path: str) -> dict:
     info = _detect.detect(path)
     info["category_label"] = registry.label_for(info.get("category"))
     if info.get("category"):
-        ok, msg = registry.engine_status(info["category"])
+        if info["format"] in registry.pages.INPUTS and info["format"] not in registry.documents.INPUTS:
+            ok, msg = registry.source_status(info)
+        else:
+            ok, msg = registry.engine_status(info["category"])
         if ok:
             ok, msg = registry.source_status(info)
         if ok and info["category"] == "image":
             from PIL import Image
 
             try:
-                info.update(registry.module_for("image").inspect_source(path))
-            except (OSError, ValueError, Image.DecompressionBombError):
+                info.update(registry.images.inspect_source(path, info["format"]))
+            except (OSError, ValueError, ImportError, RuntimeError, Image.DecompressionBombError):
                 ok, msg = False, Message("This image could not be opened or its format is unsupported.")
         info["engine_ok"] = ok
         info["engine_msg"] = msg
@@ -36,62 +41,92 @@ def analyze(path: str) -> dict:
     return info
 
 
-def output_path(src: str, target: dict, out_dir: str | None = None) -> str:
+def output_path(
+    src: str, target: dict, out_dir: str | None = None, *, page: int = 1, count: int = 1,
+    now: datetime | None = None,
+) -> str:
     """Suggest an available output name alongside the source or in a chosen folder."""
-    base = os.path.splitext(os.path.basename(src))[0]
-    if base.lower().endswith(".tar") and Path(src).suffix.lower() in {".gz", ".bz2", ".xz"}:
-        base = base[:-4]
-    folder = out_dir or os.path.dirname(src)
-    candidate = os.path.join(folder, f"{base}.{target['ext']}")
+    preset = target.get("preset")
+    desired = destination(src, target["ext"], preset.template if preset else "", out_dir, page, count, now)
+    candidate = desired
     n = 1
+    extension = "." + target["ext"]
+    stem = desired.name[:-len(extension)]
     while os.path.lexists(candidate):
-        candidate = os.path.join(folder, f"{base} ({n}).{target['ext']}")
+        candidate = desired.with_name(f"{stem} ({n}){extension}")
         n += 1
-    return candidate
+    return str(candidate)
 
 
 def run(
-    src: str, detection: dict, target: dict, out_dir: str | None = None, *, verify: bool = False
+    src: str, detection: dict, target: dict, out_dir: str | None = None, *, verify: bool = False,
+    outputs_out: list[str] | None = None,
 ) -> str:
-    """Encode to a private staging path and publish without overwriting an existing file."""
+    """Encode and verify in staging, then publish without overwriting other files."""
     category = detection["category"]
     src_fmt = detection["format"]
-    mod = registry.module_for(category)
-    if mod is None:
-        raise RuntimeError(Message("No converter is available for this format."))
-
-    ok, msg = mod.available()
-    if not ok:
-        raise RuntimeError(msg or Message("The required conversion engine is missing."))
+    preset = target.get("preset")
     if not any(
-        route["key"] == target["key"] and route["ext"] == target["ext"]
-        for route in registry.targets(detection)
+        all(route.get(key) == target.get(key) for key in ("key", "ext", "engine"))
+        for route in registry.targets(detection, include_self=preset is not None)
     ):
         raise ValueError(Message("This file cannot be converted to the selected format."))
 
-    folder = out_dir or os.path.dirname(src) or "."
+    now = datetime.now()
+    folder = Path(output_path(src, target, out_dir, now=now)).parent
+    folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".convert-", dir=folder) as staging:
-        staged = os.path.abspath(os.path.join(staging, f"output.{target['ext']}"))
-        mod.convert(os.path.abspath(src), staged, src_fmt, target["key"])
-        if not os.path.isfile(staged):
+        staged = Path(staging) / f"output.{target['ext']}"
+        backend = target.get("engine")
+        if backend == "pages":
+            outputs = registry.pages.convert(os.path.abspath(src), Path(staging), src_fmt, target["key"], preset)
+        else:
+            mod = registry.media if backend == "media" else registry.module_for(category)
+            ok, msg = mod.available()
+            if not ok:
+                raise RuntimeError(msg or Message("The required conversion engine is missing."))
+            args = (os.path.abspath(src), str(staged), src_fmt, target["key"])
+            if mod in (registry.media, registry.images):
+                mod.convert(*args, preset=preset)
+            else:
+                mod.convert(*args)
+            outputs = [staged]
+        if not outputs or any(not item.is_file() or not item.stat().st_size for item in outputs):
             raise OSError(Message("The conversion engine did not create an output file."))
         if verify:
-            _verify_output(staged, category, target["key"])
-        while True:
-            dst = output_path(src, target, out_dir)
-            try:
-                if os.name == "nt":
-                    os.rename(staged, dst)
-                else:
-                    os.link(staged, dst)
-            except FileExistsError:
-                continue
-            return dst
+            for item in outputs:
+                _verify_output(str(item), "video" if backend == "media" else category, target["key"])
+        published = []
+        try:
+            for index, item in enumerate(outputs, 1):
+                while True:
+                    dst = output_path(src, target, out_dir, page=index, count=len(outputs), now=now)
+                    Path(dst).parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        if os.name == "nt":
+                            os.rename(item, dst)
+                        else:
+                            os.link(item, dst)
+                    except FileExistsError:
+                        continue
+                    published.append((dst, _source_signature(dst)))
+                    break
+        except OSError:
+            for dst, signature in published:
+                try:
+                    if _source_signature(dst) == signature:
+                        os.unlink(dst)
+                except OSError:
+                    pass
+            raise
+        if outputs_out is not None:
+            outputs_out.extend(dst for dst, _signature in published)
+        return published[0][0]
 
 
 def _verify_output(path: str, category: str, target: str) -> None:
     """Check that the converted file can be read before removing its source."""
-    if category == "image" and target != "pdf":
+    if target in registry.images.OUTPUTS and target != "pdf" and category not in {"audio", "video"}:
         from PIL import Image, ImageSequence
 
         with Image.open(path) as image:
@@ -137,13 +172,14 @@ def _source_signature(path: str) -> tuple[int, int, int, int]:
 
 
 def replace_source(
-    src: str, detection: dict, target: dict, recycle: Callable[[str], None]
+    src: str, detection: dict, target: dict, recycle: Callable[[str], None], out_dir: str | None = None,
+    *, outputs_out: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """Publish a readable copy before asking the shell to recycle the original."""
     if os.path.islink(src):
         raise ValueError(Message("Choose Create a copy when converting a file link."))
     before = _source_signature(src)
-    dst = run(src, detection, target, verify=True)
+    dst = run(src, detection, target, out_dir, verify=True, outputs_out=outputs_out)
     try:
         if before != _source_signature(src):
             raise OSError(Message("The source file changed during conversion."))
@@ -154,3 +190,28 @@ def replace_source(
         reason = error.args[0] if len(error.args) == 1 and isinstance(error.args[0], Message) else str(error)
         return dst, reason
     return dst, None
+
+
+def archive_source(src: str) -> None:
+    """Move a verified source into a sibling archive without replacing an older file."""
+    source = Path(src)
+    folder = source.parent / "Conversion Archives"
+    folder.mkdir(exist_ok=True)
+    index = 0
+    while True:
+        name = f"{source.stem} ({index}){source.suffix}" if index else source.name
+        target = folder / name
+        try:
+            if os.name == "nt":
+                source.rename(target)
+            else:
+                os.link(source, target)
+            break
+        except FileExistsError:
+            index += 1
+    if os.name != "nt":
+        try:
+            source.unlink()
+        except OSError:
+            target.unlink()
+            raise

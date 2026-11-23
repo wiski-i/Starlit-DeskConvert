@@ -5,7 +5,7 @@ from importlib.util import find_spec
 
 from i18n import Message
 
-from .converters import images, media, documents, data, archives
+from .converters import images, media, documents, data, archives, pages
 
 # Category -> (module, English display label).
 CATEGORY_INFO = {
@@ -63,9 +63,17 @@ def _has_parquet() -> bool:
 def source_status(detection: dict) -> tuple[bool, str]:
     """Check per-format readers and their optional dependencies."""
     category, fmt = detection.get("category"), detection.get("format")
+    if fmt in pages.INPUTS and (fmt not in documents.INPUTS and category == "document"):
+        if pages.available(fmt):
+            return True, ""
+        if fmt in pages.OFFICE:
+            return False, Message("This conversion requires Microsoft {program}.", program=pages.OFFICE[fmt])
+        return False, Message("Reading this format requires {module}.", module="pypdfium2")
     if category == "document" and fmt not in documents.INPUTS:
         return False, Message("A reader is unavailable for this document format.")
     if category == "data":
+        if fmt in pages.OFFICE and pages.available(fmt):
+            return True, ""
         if fmt == "parquet" and not _has_parquet():
             return False, Message("Reading Parquet requires PyArrow or fastparquet.")
         for module in _DATA_INPUT_MODULES.get(fmt, ()):
@@ -78,7 +86,7 @@ def source_status(detection: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def targets(detection: dict) -> list[dict]:
+def targets(detection: dict, *, include_self=False, check_source=True) -> list[dict]:
     """Algılanan dosya için olası hedefleri döndürür.
 
     Her hedef: {key, label, ext}
@@ -89,42 +97,53 @@ def targets(detection: dict) -> list[dict]:
     category = detection.get("category")
     fmt = detection.get("format")
     out: list[dict] = []
-    if not source_status(detection)[0]:
+    if check_source and not source_status(detection)[0]:
         return out
 
     if category == "image":
         for k in images.OUTPUTS:
             if k == "webp" and images_webp_blocked(detection):
                 continue
-            if k != fmt:
+            if k != fmt or include_self:
                 out.append({"key": k, "label": k.upper(), "ext": k})
+
+        if fmt == "gif":
+            for k in media.VIDEO_OUTPUTS:
+                if k != "gif":
+                    out.append({"key": k, "label": k.upper(), "ext": k, "engine": "media"})
 
     elif category in ("audio", "video"):
         for k in media.outputs_for(category):
-            if k != fmt:
+            if k != fmt or include_self:
                 out.append({"key": k, "label": k.upper(), "ext": k})
 
     elif category == "document":
-        for k in documents.OUTPUTS:
-            if k != fmt:
+        for k in documents.OUTPUTS if fmt in documents.INPUTS else ():
+            if k != fmt or include_self:
                 out.append({"key": k, "label": k.upper(), "ext": k})
 
     elif category == "data":
-        for k in data.OUTPUTS:
+        data_readable = not any(find_spec(module) is None for module in _DATA_INPUT_MODULES.get(fmt, ()))
+        for k in data.OUTPUTS if data_readable else ():
             if k == "parquet" and not _has_parquet():
                 continue
             if any(find_spec(module) is None for module in _DATA_OUTPUT_MODULES.get(k, ())):
                 continue
-            if k != fmt:
+            if k != fmt or include_self:
                 out.append({"key": k, "label": k.upper(), "ext": k})
 
     elif category == "archive":
         self_key = _ARCHIVE_SELF.get(fmt)
         for k in archives.OUTPUTS:
-            if k == self_key or (k == "7z" and find_spec("py7zr") is None):
+            if (k == self_key and not include_self) or (k == "7z" and find_spec("py7zr") is None):
                 continue
             out.append({"key": k, "label": archives.LABELS[k], "ext": _ARCHIVE_EXT[k]})
 
+    if fmt in pages.INPUTS and (not check_source or pages.available(fmt)):
+        page_targets = list(pages.OUTPUTS) if not check_source or pages.available("pdf") else []
+        if fmt != "pdf":
+            page_targets.insert(0, "pdf")
+        out.extend({"key": k, "label": k.upper(), "ext": k, "engine": "pages"} for k in page_targets)
     return out
 
 

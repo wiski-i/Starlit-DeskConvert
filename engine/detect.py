@@ -21,7 +21,7 @@ ALIASES = {
     "text": "txt",
     "markdown": "md",
     "aif": "aiff",
-    "oga": "ogg",
+    "oga": "ogg", "dns": "dng", "m4b": "m4a", "3gpp": "3gp", "mpegts": "ts",
 }
 
 # Kanonik format -> kategori
@@ -31,20 +31,23 @@ FORMAT_CATEGORY = {
     "gif": "image", "tiff": "image", "ico": "image", "heic": "image",
     "heif": "image", "avif": "image", "ppm": "image", "pgm": "image",
     "tga": "image", "dib": "image", "jp2": "image", "svg": "image",
+    "arw": "image", "cr2": "image", "nef": "image", "raf": "image", "dng": "image",
+    "dds": "image", "exr": "image", "psd": "image", "xcf": "image",
     # --- Ses ---
     "mp3": "audio", "wav": "audio", "flac": "audio", "aac": "audio",
     "ogg": "audio", "oga": "audio", "m4a": "audio", "opus": "audio",
     "wma": "audio", "aiff": "audio", "aif": "audio", "amr": "audio",
-    "mid": "audio", "ac3": "audio",
+    "mid": "audio", "ac3": "audio", "ape": "audio", "cda": "audio",
     # --- Video ---
     "mp4": "video", "mkv": "video", "avi": "video", "mov": "video",
     "webm": "video", "flv": "video", "wmv": "video", "mpg": "video",
-    "3gp": "video", "ts": "video", "ogv": "video",
+    "3gp": "video", "ts": "video", "ogv": "video", "bik": "video", "rm": "video", "vob": "video",
     # --- Belgeler ---
     "docx": "document", "doc": "document", "odt": "document",
     "rtf": "document", "html": "document", "md": "document",
     "markdown": "document", "txt": "document", "epub": "document",
     "tex": "document", "rst": "document", "org": "document",
+    "pdf": "document", "ppt": "document", "pptx": "document", "odp": "document",
     # --- Veri / Tablo ---
     "csv": "data", "tsv": "data", "xlsx": "data", "xls": "data",
     "json": "data", "xml": "data", "yaml": "data", "parquet": "data",
@@ -106,6 +109,8 @@ def _sniff(path: str, extension: str) -> str | None:
                 continue
             if fmt == "_riff":
                 sub = head[8:12]
+                if sub == b"CDDA":
+                    return "cda"
                 if sub == b"WAVE":
                     return "wav"
                 if sub == b"WEBP":
@@ -128,11 +133,16 @@ def _sniff(path: str, extension: str) -> str | None:
                     return "m4a"
                 if major[:3] in (b"qt ", b"QT "):
                     return "mov"
-                return extension if extension in {"m4a", "3gp"} else "mp4"
+                return "3gp" if major[:3] == b"3gp" else extension if extension == "m4a" else "mp4"
             if fmt == "_zip":
                 return _zip_kind(path)
-            if fmt == "ogg" and b"OpusHead" in head:
-                return "opus"
+            if fmt == "ogg":
+                if b"\x80theora" in head or extension == "ogv":
+                    return "ogv"
+                if b"OpusHead" in head:
+                    return "opus"
+            if fmt == "tiff" and extension in {"arw", "cr2", "nef", "raf", "dng"}:
+                return extension
             return fmt
     if not extension:
         try:
@@ -150,6 +160,8 @@ def _zip_kind(path: str) -> str:
             names = set(archive.namelist())
             if "word/document.xml" in names:
                 return "docx"
+            if "ppt/presentation.xml" in names:
+                return "pptx"
             if "xl/workbook.xml" in names:
                 return "xlsx"
             if "mimetype" in names:
@@ -159,6 +171,7 @@ def _zip_kind(path: str) -> str:
                     b"application/epub+zip": "epub",
                     b"application/vnd.oasis.opendocument.text": "odt",
                     b"application/vnd.oasis.opendocument.spreadsheet": "ods",
+                    b"application/vnd.oasis.opendocument.presentation": "odp",
                 }.get(kind, "zip")
     except (OSError, zipfile.BadZipFile, RuntimeError):
         pass

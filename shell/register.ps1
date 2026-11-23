@@ -50,4 +50,13 @@ $installed = Get-AppxPackage -Name $identity
 if (!$installed) { throw 'Windows did not register the Explorer package.' }
 New-Item -Path $state -Force | Out-Null
 New-ItemProperty -LiteralPath $state -Name 'ExplorerPackageFamily' -PropertyType String -Value $installed.PackageFamilyName -Force | Out-Null
+$python = Join-Path $project '.venv\Scripts\python.exe'
+if (Test-Path -LiteralPath $python) {
+    Push-Location -LiteralPath $project
+    try {
+        & $python -c 'import windows_shell; windows_shell.refresh_presets()'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not refresh the Explorer presets.' }
+    }
+    finally { Pop-Location }
+}
 Write-Output $installed.PackageFamilyName

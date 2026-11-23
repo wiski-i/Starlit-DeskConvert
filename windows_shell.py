@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import ctypes
 import os
+import struct
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from uuid import UUID
 
 from i18n import DEFAULT_LANGUAGE, LANGUAGES, Message, tr
+from engine import presets
 
 MENU_KEY = r"Software\Classes\*\shell\DosyaDonusturucu.Convert"
 STATE_KEY = r"Software\DosyaDonusturucu"
 LANGUAGE_VALUE = "Language"
+PRESET_MENU_VALUE = "ExplorerPresets"
+CLASSIC_EXTENSIONS_VALUE = "ClassicPresetExtensions"
+ASSOCIATIONS = r"Software\Classes\SystemFileAssociations"
+CLASSIC_VERB = "DeskConvert.Presets"
 APP_PATH = Path(__file__).with_name("app.py").resolve()
 SHELL_DIR = APP_PATH.parent / "shell"
 
@@ -40,12 +47,7 @@ def save_language(language: str) -> None:
 
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STATE_KEY) as key:
         winreg.SetValueEx(key, LANGUAGE_VALUE, 0, winreg.REG_SZ, language)
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_KEY, access=winreg.KEY_SET_VALUE) as key:
-            winreg.SetValueEx(key, "MUIVerb", 0, winreg.REG_SZ, tr("Convert File", language=language))
-    except FileNotFoundError:
-        pass
-    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
+    refresh_presets()
 
 
 def _modern_menu_enabled() -> bool:
@@ -69,11 +71,22 @@ def menu_location() -> str | None:
 
     if _modern_menu_enabled():
         return "main"
+    return "classic" if _classic_menu_enabled() else None
+
+
+def _classic_menu_enabled() -> bool:
+    import winreg
+
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_KEY + r"\command") as key:
-            return "classic" if winreg.QueryValueEx(key, "")[0] else None
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STATE_KEY) as key:
+            winreg.QueryValueEx(key, CLASSIC_EXTENSIONS_VALUE)
+        return True
     except FileNotFoundError:
-        return None
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_KEY + r"\command"):
+                return True
+        except FileNotFoundError:
+            return False
 
 
 def menu_enabled() -> bool:
@@ -83,14 +96,44 @@ def menu_enabled() -> bool:
 def set_menu_enabled(enabled: bool) -> None:
     modern = _modern_menu_enabled()
     signed = (SHELL_DIR / "dist" / "ExplorerMenu.cer").is_file()
-    if enabled and signed:
-        _manage_modern()
-        set_classic_menu_enabled(False)
-    elif not enabled and modern:
-        _manage_modern(remove=True)
+    if not enabled:
+        if modern:
+            _manage_modern(remove=True)
         set_classic_menu_enabled(False)
     else:
-        set_classic_menu_enabled(enabled)
+        if signed and not modern:
+            try:
+                _manage_modern()
+            except OSError:
+                # The classic menu still works before the package's signer is trusted.
+                pass
+        set_classic_menu_enabled(True)
+
+
+def upgrade_classic_menu(items) -> None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, MENU_KEY + r"\command"):
+            pass
+    except FileNotFoundError:
+        return
+    set_classic_menu_enabled(True, items=items)
+
+
+def refresh_presets(items=None) -> None:
+    if _classic_menu_enabled():
+        set_classic_menu_enabled(True, items=items)
+    elif _modern_menu_enabled():
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STATE_KEY) as key:
+            _write_native_menu(key, items if items is not None else presets.load(), read_language())
+        _notify_assoc_changed()
+
+
+def _notify_assoc_changed() -> None:
+    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
 
 
 def _manage_modern(*, remove: bool = False) -> None:
@@ -109,31 +152,142 @@ def _manage_modern(*, remove: bool = False) -> None:
         raise OSError(Message("Could not register the File Explorer extension."))
 
 
-def set_classic_menu_enabled(enabled: bool) -> None:
+def _rows(items, language):
+    for item in items:
+        if not item.enabled:
+            continue
+        extensions = presets.applicable_extensions(item)
+        if extensions:
+            name = tr(item.name, language=language) if item.builtin else item.name
+            group = tr(item.group, language=language) if item.builtin else item.group
+            yield item.id, name, group, extensions
+
+
+def _write_native_menu(key, items, language):
+    import winreg
+
+    rows = ["\t".join((identifier, ",".join(exts), f"{group} / {name}" if group else name))
+            for identifier, name, group, exts in _rows(items, language)]
+    winreg.SetValueEx(key, PRESET_MENU_VALUE, 0, winreg.REG_MULTI_SZ, rows)
+    winreg.SetValueEx(key, "ExplorerPython", 0, winreg.REG_SZ,
+                      str(Path(sys.executable).with_name("pythonw.exe")))
+
+
+def _delete_tree(path):
     import winreg
 
     hive = winreg.HKEY_CURRENT_USER
-    command_key = MENU_KEY + r"\command"
+    try:
+        with winreg.OpenKey(hive, path) as key:
+            children = [winreg.EnumKey(key, index) for index in range(winreg.QueryInfoKey(key)[0])]
+    except FileNotFoundError:
+        return
+    for child in children:
+        _delete_tree(f"{path}\\{child}")
+    winreg.DeleteKey(hive, path)
+
+
+def _write_classic_menu(root, rows, executable, language):
+    import winreg
+
+    hive = winreg.HKEY_CURRENT_USER
+    icon = APP_PATH.parent / "assets" / "icon.ico"
+
+    def entry(path, label, *, cascade=False, argument=""):
+        with winreg.CreateKey(hive, path) as key:
+            winreg.SetValueEx(key, "MUIVerb", 0, winreg.REG_SZ, label)
+            if cascade:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
+            else:
+                winreg.SetValueEx(key, "MultiSelectModel", 0, winreg.REG_SZ, "Single")
+        if not cascade:
+            with winreg.CreateKey(hive, path + r"\command") as key:
+                command = f'"{executable}" "{APP_PATH}" {argument} -- "%1"'
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
+
+    entry(root, "DeskConvert", cascade=True)
+    if icon.is_file():
+        with winreg.OpenKey(hive, root, access=winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, str(icon))
+    menu = root + r"\ExtendedSubCommandsKey\shell"
+    groups = {}
+    for index, (identifier, name, group) in enumerate(rows, 1):
+        branch = menu
+        if group:
+            if group not in groups:
+                parent = f"{menu}\\{index:04d}-group"
+                entry(parent, group, cascade=True)
+                groups[group] = parent + r"\ExtendedSubCommandsKey\shell"
+            branch = groups[group]
+        entry(f"{branch}\\{index:04d}-{identifier}", name, argument=f"--preset {identifier}")
+    entry(menu + r"\9998-open", tr("Open DeskConvert", language=language))
+    entry(menu + r"\9999-configure", tr("Manage presets", language=language), argument="--configure-presets")
+
+
+def set_classic_menu_enabled(enabled: bool, *, items=None) -> None:
+    import winreg
+
+    hive = winreg.HKEY_CURRENT_USER
+    executable = Path(sys.executable).with_name("pythonw.exe")
+    if enabled and not executable.is_file():
+        raise FileNotFoundError(Message("pythonw.exe was not found."))
+    language = read_language()
+    items = (presets.load() if items is None else items) if enabled else []
+    grouped = defaultdict(list)
     if enabled:
-        executable = Path(sys.executable).with_name("pythonw.exe")
-        if not executable.is_file():
-            raise FileNotFoundError(Message("pythonw.exe was not found."))
-        with winreg.CreateKey(hive, MENU_KEY) as key:
-            winreg.SetValueEx(key, "MUIVerb", 0, winreg.REG_SZ, tr("Convert File", language=read_language()))
-            winreg.SetValueEx(key, "MultiSelectModel", 0, winreg.REG_SZ, "Single")
-            icon = APP_PATH.parent / "assets" / "icon.ico"
-            if icon.is_file():
-                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, str(icon))
-        with winreg.CreateKey(hive, command_key) as key:
-            command = f'"{executable}" "{APP_PATH}" -- "%1"'
-            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
-    else:
-        for name in (command_key, MENU_KEY):
-            try:
-                winreg.DeleteKey(hive, name)
-            except FileNotFoundError:
-                pass
-    ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
+        extension_names = presets.detect.FORMAT_CATEGORY.keys() | presets.detect.ALIASES.keys()
+        for extension in extension_names:
+            grouped[extension] = []
+    for identifier, name, group, extensions in _rows(items, language):
+        for extension in extensions:
+            grouped[extension].append((identifier, name, group))
+
+    def root(extension):
+        return f"{ASSOCIATIONS}\\.{extension}\\shell\\{CLASSIC_VERB}"
+
+    with winreg.CreateKey(hive, STATE_KEY) as state:
+        try:
+            old = winreg.QueryValueEx(state, CLASSIC_EXTENSIONS_VALUE)[0]
+        except FileNotFoundError:
+            old = ()
+        _delete_tree(MENU_KEY)
+        if enabled:
+            # Record keys before building so a partially failed registration can be retried or removed.
+            tracked = sorted(set(old) | set(grouped))
+            winreg.SetValueEx(state, CLASSIC_EXTENSIONS_VALUE, 0, winreg.REG_MULTI_SZ, tracked)
+            _write_native_menu(state, items, language)
+        for extension in old:
+            _delete_tree(root(extension))
+        if enabled:
+            for extension, rows in grouped.items():
+                _write_classic_menu(root(extension), rows, executable, language)
+            winreg.SetValueEx(state, CLASSIC_EXTENSIONS_VALUE, 0, winreg.REG_MULTI_SZ, sorted(grouped))
+        else:
+            for value in (CLASSIC_EXTENSIONS_VALUE, PRESET_MENU_VALUE, "ExplorerPython"):
+                try:
+                    winreg.DeleteValue(state, value)
+                except FileNotFoundError:
+                    pass
+    _notify_assoc_changed()
+
+
+def copy_files(paths: list[str], hwnd: int) -> None:
+    """Put completed files on the Windows clipboard for normal Explorer paste."""
+    import pywintypes
+    import win32clipboard
+    import win32con
+
+    dropfiles = struct.pack("<IiiII", 20, 0, 0, 0, 1)
+    names = ("\0".join(os.path.abspath(path) for path in paths) + "\0\0").encode("utf-16-le")
+    try:
+        win32clipboard.OpenClipboard(hwnd)
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32con.CF_HDROP, dropfiles + names)
+        finally:
+            win32clipboard.CloseClipboard()
+    except pywintypes.error as error:
+        raise OSError(str(error)) from error
 
 
 def reveal_file(path: str) -> None:

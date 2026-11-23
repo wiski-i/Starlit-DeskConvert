@@ -1,9 +1,13 @@
 """Desktop workspace for previewing and converting local files."""
 from __future__ import annotations
 
+import argparse
 import os
+import shutil
+import subprocess
 import sys
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -15,9 +19,11 @@ from PIL import Image, ImageDraw
 
 import windows_shell
 from engine import convert as engine
+from engine import presets
 from engine.converters import images, media
 from i18n import LANGUAGES, Message, get_language, set_language, tr
 from popups import FormatPicker, show_dialog
+from preset_window import PresetWindow
 from preview_window import PreviewWindow
 from theme import (
     ACCENT, ACCENT_2, ACCENT_H, ACCENT_HOVER, BG, BORDER, BORDER_H,
@@ -229,6 +235,19 @@ class App(_Root):
         self.empty_queue = None
         self.stop_requested = threading.Event()
         self.localized_text = []
+        self.preset_window = None
+        self.presets_error = None
+        try:
+            self.presets = presets.load()
+        except (OSError, ValueError, TypeError) as error:
+            self.presets = []
+            self.presets_error = error
+
+        try:
+            self.preferences = presets.load_preferences()
+        except (OSError, ValueError, TypeError) as error:
+            self.preferences = presets.Preferences()
+            self.presets_error = error
 
         self._build()
         self.bind("<Control-o>", lambda _event: self.pick_files())
@@ -240,6 +259,14 @@ class App(_Root):
             self.add_files(paths)
         if not self.files:
             self._refresh()
+        if sys.platform == "win32" and not paths and not self.presets_error:
+            try:
+                windows_shell.upgrade_classic_menu(self.presets)
+                self._refresh_shell_button()
+            except OSError:
+                self.set_status(tr("Could not update the File Explorer context menu."), WARN)
+        if self.preferences.check_updates and not paths:
+            self.after(800, self._check_updates)
 
     # ───────────────────────────────────────── iskelet
     def _build(self):
@@ -435,9 +462,15 @@ class App(_Root):
         card = make_card(root)
         card.grid(row=2, column=1, sticky="nsew", padx=(9, 0), pady=9)
 
+        heading = ctk.CTkFrame(card, fg_color="transparent")
+        heading.pack(fill="x", padx=18, pady=(12, 8))
         self._localized(
-            ctk.CTkLabel, card, "Target format", font=font(15, "bold"), text_color=TEXT,
-        ).pack(anchor="w", padx=18, pady=(14, 8))
+            ctk.CTkLabel, heading, "Target format", font=font(15, "bold"), text_color=TEXT,
+        ).pack(side="left")
+        self._localized(
+            ctk.CTkButton, heading, "Manage presets", font=font(12), width=108, height=28,
+            fg_color=SURFACE, hover_color=SURFACE_H, command=self._manage_presets,
+        ).pack(side="right")
 
         flow = ctk.CTkFrame(card, fg_color="transparent")
         flow.pack(fill="x", padx=18)
@@ -507,6 +540,71 @@ class App(_Root):
         self.status = ctk.CTkLabel(card, text=tr("Waiting for files…"), font=font(12),
                                    text_color=MUTED, anchor="w")
         self.status.grid(row=0, column=0, sticky="ew", padx=(17, 4), pady=(9, 1))
+
+    def _check_updates(self):
+        git = shutil.which("git")
+        if not git or not (Path(__file__).parent / ".git").exists():
+            return
+
+        def check():
+            environment = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never")
+            options = dict(cwd=Path(__file__).parent, capture_output=True, text=True, timeout=8,
+                           env=environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                local = subprocess.run([git, "rev-parse", "HEAD"], **options, check=True).stdout.strip()
+                result = subprocess.run([git, "ls-remote", "origin", "HEAD"], **options)
+                if result.returncode and (gh := shutil.which("gh")):
+                    result = subprocess.run(
+                        [gh, "api", "repos/wiski-i/Starlit-DeskConvert/commits/main", "--jq", ".sha"], **options,
+                    )
+                remote = result.stdout.split()
+                # Only report an update if the remote head is not already in local history.
+                if result.returncode == 0 and remote and remote[0] != local:
+                    ancestor = subprocess.run([git, "merge-base", "--is-ancestor", remote[0], local], **options)
+                    if ancestor.returncode != 0:
+                        self.after(0, self._show_update)
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                return
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _show_update(self):
+        if not self.busy:
+            self.set_status(tr("A newer GitHub revision is available."), OK)
+
+    def _manage_presets(self):
+        if self.busy:
+            return
+        if self.preset_window and self.preset_window.winfo_exists():
+            self.preset_window.focus()
+            return
+        if self.presets_error:
+            show_dialog(self, tr("Manage presets"), tr("Could not read the preset file. {reason}", reason=self.presets_error))
+            self.presets_error = None
+        self.preset_window = PresetWindow(self, self.presets, self.preferences, self._save_presets)
+
+    def _save_presets(self, items, preferences):
+        presets.save(items)
+        presets.save_preferences(preferences)
+        self.presets = items
+        self.preferences = preferences
+        if sys.platform == "win32":
+            windows_shell.refresh_presets(items)
+        self._update_targets()
+
+    def run_preset(self, identifier):
+        preset = next((item for item in self.presets if item.id == identifier and item.enabled), None)
+        if preset is None:
+            show_dialog(self, tr("Manage presets"), tr("This preset is missing or disabled."))
+            return
+        jobs = [file for file in self.files if presets.target_for(preset, file["info"])]
+        if not jobs:
+            show_dialog(self, preset.title, tr("No compatible files"))
+            return
+        if len(jobs) < len(self.files):
+            show_dialog(self, preset.title, tr("Some selected files cannot use this preset."))
+            return
+        self._begin_conversion(jobs, {"preset": preset, "label": preset.title}, preset.action, None)
 
     def _refresh_shell_button(self):
         try:
@@ -800,6 +898,14 @@ class App(_Root):
         previous_target = self.target.get()
         self.primary_cat = info["category"]
         self.target_map = {t["label"]: t for t in info["targets"]}
+        for item in self.presets:
+            route = presets.target_for(item, info)
+            if route:
+                title = f"{item.menu_group} / {item.title}" if item.group else item.title
+                label = tr("Preset · {name}", name=title)
+                while label in self.target_map:
+                    label += " ·"
+                self.target_map[label] = {**route, "label": label}
         labels = list(self.target_map.keys())
         color = CAT_COLORS[self.primary_cat]
         self.src_icon.configure(image=icon(self.primary_cat, 18, color))
@@ -812,6 +918,8 @@ class App(_Root):
         self._target_changed(self.target.get())
 
     def _jobs_for(self, target):
+        if preset := target.get("preset"):
+            return [file for file in self.files if presets.target_for(preset, file["info"])]
         return [
             f for f in self.files
             if f["info"].get("category") == self.primary_cat and f["info"].get("engine_ok")
@@ -839,7 +947,11 @@ class App(_Root):
             (depth or 0) > 8 or (depth is not None and frames > 1)
         )
         color = SUB
-        if blocked and (depth or 0) > 8:
+        if preset := target.get("preset"):
+            detail = tr("Output format · {format}", format=key.upper())
+            if preset.action != "keep":
+                detail += " · " + tr(f"Source action: {preset.action}")
+        elif blocked and (depth or 0) > 8:
             detail, color = tr("WebP cannot preserve the color depth of a 16-bit PNG."), WARN
         elif blocked:
             detail, color = tr("Lossless WebP conversion does not support animated PNGs."), WARN
@@ -871,8 +983,20 @@ class App(_Root):
         jobs = self._jobs_for(target)
         if not jobs:
             return
-        replace = self.save_mode.get() == tr(REPLACE_LABEL)
-        if replace and not show_dialog(
+        preset = target.get("preset")
+        action = "recycle" if self.save_mode.get() == tr(REPLACE_LABEL) else preset.action if preset else "keep"
+        self._begin_conversion(jobs, target, action, self.out_dir)
+
+    def _begin_conversion(self, jobs, target, action, out_dir):
+        if self.busy:
+            return
+        if action == "delete" and not show_dialog(
+            self, tr("Permanently delete originals"),
+            tr("Permanently delete {count} original file(s) after verifying the outputs?", count=len(jobs)),
+            confirm=True,
+        ):
+            return
+        if action == "recycle" and not show_dialog(
             self,
             tr(REPLACE_LABEL),
             tr(
@@ -891,7 +1015,7 @@ class App(_Root):
         self.clear_completed.configure(state="disabled")
         self.convert_btn.configure(state="disabled", text=tr("Converting…"))
         self.output_action.configure(
-            text=tr("Stop after this file") if len(jobs) > 1 else tr("Show output"),
+            text=tr("Stop after active files") if len(jobs) > 1 else tr("Show output"),
             state="normal" if len(jobs) > 1 else "disabled",
         )
         self.progress.set(0)
@@ -899,35 +1023,67 @@ class App(_Root):
             self.progress.configure(mode="indeterminate")
             self.progress.start()
         threading.Thread(
-            target=self._worker, args=(jobs, target, replace, self.out_dir), daemon=True,
+            target=self._worker, args=(jobs, target, action, out_dir), daemon=True,
         ).start()
 
-    def _worker(self, jobs, target, replace, out_dir):
+    def _worker(self, jobs, target, action, out_dir):
         total = len(jobs)
         results = {}
-        for index, file in enumerate(jobs, 1):
-            if self.stop_requested.is_set():
-                break
-            source, info = file["path"], file["info"]
-            name = short_text(info["name"], 28)
-            self.after(0, self._working_on, f"{index}/{total}  ·  {name} → {target['label']}")
-            if total > 1:
-                self.after(0, self.progress.set, (index - 1) / total)
-            try:
-                if replace:
-                    output, warning = engine.replace_source(source, info, target, windows_shell.recycle)
-                    results[source] = (output, Message("Original kept. {reason}", reason=warning) if warning else None)
-                else:
-                    results[source] = (engine.run(source, info, target, out_dir), None)
-            except Exception as error:
-                results[source] = (None, error)
-        self.after(0, self._finish, results, total)
+        all_outputs = []
+        queue = iter(jobs)
+        # Office uses application-wide settings during export, so keep that batch serial.
+        serial = any(
+            (presets.target_for(target["preset"], file["info"]) if "preset" in target else target)
+            .get("engine") == "pages" and file["info"]["format"] != "pdf"
+            for file in jobs
+        )
+        workers = 1 if serial else min(self.preferences.parallel, total)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = {}
+            while pending or not self.stop_requested.is_set():
+                while len(pending) < workers and not self.stop_requested.is_set():
+                    file = next(queue, None)
+                    if file is None:
+                        break
+                    name = short_text(file["info"]["name"], 28)
+                    count = len(results) + len(pending) + 1
+                    self.after(0, self._working_on, f"{count}/{total}  ·  {name} → {target['label']}")
+                    task = pool.submit(self._convert_one, file, target, action, out_dir)
+                    pending[task] = file["path"]
+                if not pending:
+                    break
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for task in completed:
+                    source = pending.pop(task)
+                    try:
+                        result, outputs = task.result()
+                        results[source] = result
+                        all_outputs.extend(outputs)
+                    except Exception as error:
+                        results[source] = (None, error)
+                if total > 1:
+                    self.after(0, self.progress.set, len(results) / total)
+        self.after(0, self._finish, results, total, all_outputs)
+
+    def _convert_one(self, file, target, action, out_dir):
+        source, info = file["path"], file["info"]
+        route = presets.target_for(target["preset"], info) if "preset" in target else target
+        outputs = []
+        warning = None
+        if action != "keep":
+            remove = {"recycle": windows_shell.recycle, "archive": engine.archive_source, "delete": os.unlink}
+            output, warning = engine.replace_source(
+                source, info, route, remove[action], out_dir, outputs_out=outputs,
+            )
+        else:
+            output = engine.run(source, info, route, out_dir, verify="preset" in target, outputs_out=outputs)
+        return (output, Message("Original kept. {reason}", reason=warning) if warning else None), outputs
 
     def _working_on(self, status):
         if not self.stop_requested.is_set():
             self.set_status(status, ACCENT_H)
 
-    def _finish(self, results, total):
+    def _finish(self, results, total, all_outputs):
         self.busy = False
         self.progress.stop()
         self.progress.configure(mode="determinate")
@@ -945,6 +1101,11 @@ class App(_Root):
         self._refresh()
         outputs = [path for path, _warning in results.values() if path]
         warnings = [warning for _path, warning in results.values() if warning]
+        if all_outputs and self.preferences.copy_outputs and sys.platform == "win32":
+            try:
+                windows_shell.copy_files(all_outputs, self.winfo_id())
+            except (OSError, ImportError) as error:
+                show_dialog(self, tr("Copy converted files to clipboard"), str(error))
         if len(results) < total:
             self.set_status(tr("Stopped · {done}/{total} files processed", done=len(results), total=total), WARN)
         elif len(results) == 1 and warnings:
@@ -974,7 +1135,7 @@ class App(_Root):
         if self.busy:
             self.stop_requested.set()
             self.output_action.configure(text=tr("Stopping…"), state="disabled")
-            self.set_status(tr("Finishing the current file before stopping."), WARN)
+            self.set_status(tr("Finishing active files before stopping."), WARN)
             return
         output, warning = self.results.get(self.preview_path, (None, None))
         if output:
@@ -1004,10 +1165,18 @@ def main():
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DosyaDonusturucu.Desktop")
-    paths = sys.argv[1:]
-    if paths[:1] == ["--"]:
-        paths = paths[1:]
-    App(paths).mainloop()
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preset")
+    mode.add_argument("--configure-presets", action="store_true")
+    parser.add_argument("paths", nargs="*")
+    args = parser.parse_args()
+    app = App(args.paths)
+    if args.preset:
+        app.after_idle(app.run_preset, args.preset)
+    elif args.configure_presets:
+        app.after_idle(app._manage_presets)
+    app.mainloop()
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ customtkinter>=5.2.0
 tkinterdnd2>=0.4.2          # Sürükle-bırak (opsiyonel)
 
 # Görseller
-Pillow>=10.0.0
+Pillow>=11.3.0
 pillow-heif>=0.13.0        # HEIC/HEIF desteği (opsiyonel)
 
 # Ses & Video (ffmpeg binary'sini paketler — sistem kurulumu gerekmez)
@@ -20,3 +20,12 @@ tabulate>=0.9.0          # markdown tablo çıktısı
 
 # Arşivler
 py7zr>=0.20.0             # 7z desteği (opsiyonel)
+
+# PDF, SVG, RAW and native Office exports
+pypdfium2>=4.30
+resvg-py>=0.5
+rawpy>=0.23; platform_machine == "AMD64"
+olefile>=0.47
+pywin32>=306; sys_platform == "win32"
+xlrd>=2.0.2
+odfpy>=1.4.1
