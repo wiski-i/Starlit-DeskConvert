@@ -10,7 +10,9 @@ import customtkinter as ctk
 from engine import presets
 from i18n import tr
 from popups import FormatPicker, show_dialog
-from theme import ACCENT, ACCENT_HOVER, BG, BORDER, PANEL, SUB, SURFACE, SURFACE_H, TEXT, font
+from theme import (
+    ACCENT, ACCENT_HOVER, BG, BORDER, PANEL, SUB, SURFACE, SURFACE_H, TEXT, bind_window_frame, font,
+)
 
 
 class PresetWindow(ctk.CTkToplevel):
@@ -21,6 +23,7 @@ class PresetWindow(ctk.CTkToplevel):
         self.minsize(720, 560)
         self.configure(fg_color=BG)
         self.transient(parent)
+        bind_window_frame(self)
         self.items = list(items)
         self.on_save = on_save
         self.current = None

@@ -257,8 +257,6 @@ class App(_Root):
         self.minsize(820, 700)
         self.configure(fg_color=BG)
         bind_window_frame(self)
-        if (ASSETS / "icon.ico").is_file() and sys.platform == "win32":
-            self.after(250, self.iconbitmap, str(ASSETS / "icon.ico"))
 
         self.files: list[dict] = []
         self.primary_cat: str | None = None
