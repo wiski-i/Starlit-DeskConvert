@@ -266,6 +266,10 @@ class App(_Root):
         self.preview_path: str | None = None
         self.preview_details = None
         self.previews: SimpleQueue = SimpleQueue()
+        self.file_load_results: SimpleQueue = SimpleQueue()
+        self._pending_files: set[str] = set()
+        self._load_generation = 0
+        self._file_load_error = None
         self.preview_pending: tuple[str, str] | None = None
         self.preview_active = False
         self.results: dict[str, tuple[str | None, str | Exception | None]] = {}
@@ -294,7 +298,7 @@ class App(_Root):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(60, self._poll_previews)
         if paths:
-            self.add_files(paths)
+            self.after_idle(self.add_files, list(paths))
         if not self.files:
             self._refresh()
         if sys.platform == "win32" and not paths and not self.presets_error:
@@ -520,7 +524,7 @@ class App(_Root):
         self.src_lbl = ctk.CTkLabel(self.src_chip, text="—", font=font(13, "bold"), text_color=MUTED)
         self.src_lbl.pack(side="left")
         ctk.CTkLabel(flow, text="", image=icon("arrow", 20, ACCENT_2)).pack(side="left", padx=10)
-        self.target = FormatPicker(flow, command=self._target_changed, arrow=icon("chevron", 18, "#FFFFFF"))
+        self.target = FormatPicker(flow, command=self._target_changed)
         self.target.pack(side="left", fill="x", expand=True)
 
         self.route_detail = ctk.CTkLabel(
@@ -632,6 +636,9 @@ class App(_Root):
         self._update_targets()
 
     def run_preset(self, identifier):
+        if self._pending_files:
+            self.after(60, self.run_preset, identifier)
+            return
         preset = next((item for item in self.presets if item.id == identifier and item.enabled), None)
         if preset is None:
             show_dialog(self, tr("Manage presets"), tr("This preset is missing or disabled."))
@@ -695,20 +702,65 @@ class App(_Root):
     def add_files(self, paths):
         if self.busy:
             return
-        added = 0
-        known = {os.path.normcase(file["path"]) for file in self.files}
+        known = {os.path.normcase(file["path"]) for file in self.files} | self._pending_files
+        pending = []
         for p in paths:
             path = os.path.abspath(p)
-            if os.path.isfile(path) and os.path.normcase(path) not in known:
-                self.files.append({"path": path, "info": engine.analyze(path)})
-                known.add(os.path.normcase(path))
-                added += 1
-        if added:
+            key = os.path.normcase(path)
+            if key not in known:
+                known.add(key)
+                pending.append(path)
+        if not pending:
+            return
+        if not self._pending_files:
+            self._file_load_error = None
+        self._pending_files.update(os.path.normcase(path) for path in pending)
+        self.convert_btn.configure(state="disabled")
+        self.set_status(tr("Loading files…"), MUTED)
+        threading.Thread(
+            target=self._inspect_files, args=(self._load_generation, pending), daemon=True,
+        ).start()
+
+    def _inspect_files(self, generation, paths):
+        # File readers and optional imports must never block Tk's paint events.
+        for path in paths:
+            info, error = None, None
+            try:
+                if os.path.isfile(path):
+                    info = engine.analyze(path)
+            except Exception as reason:
+                error = reason
+            self.file_load_results.put((generation, path, info, error))
+
+    def _poll_files(self):
+        received = False
+        for _ in range(8):
+            try:
+                generation, path, info, error = self.file_load_results.get_nowait()
+            except Empty:
+                break
+            if generation != self._load_generation:
+                continue
+            received = True
+            self._pending_files.discard(os.path.normcase(path))
+            if error is not None:
+                self._file_load_error = (path, error)
+            elif info is not None:
+                self.files.append({"path": path, "info": info})
+        if received:
             self._refresh()
+            if self._pending_files:
+                self.set_status(tr("Loading files…"), MUTED)
+            elif self._file_load_error is not None:
+                path, error = self._file_load_error
+                self.set_status(tr("Could not read {name}. {reason}", name=os.path.basename(path), reason=tr(error)), ERR)
 
     def clear_all(self):
         if self.busy:
             return
+        self._load_generation += 1
+        self._pending_files.clear()
+        self._file_load_error = None
         self.files.clear()
         self.results.clear()
         self.primary_cat = None
@@ -895,6 +947,7 @@ class App(_Root):
             self.previews.put((path, None, None))
 
     def _poll_previews(self):
+        self._poll_files()
         while True:
             try:
                 path, thumbnail, details = self.previews.get_nowait()
@@ -1011,7 +1064,7 @@ class App(_Root):
         else:
             detail = tr("Output format · {format}", format=target["label"])
         self.route_detail.configure(text=detail, text_color=color)
-        self.convert_btn.configure(state="normal" if jobs and not self.busy and not blocked else "disabled")
+        self.convert_btn.configure(state="normal" if jobs and not self.busy and not self._pending_files and not blocked else "disabled")
 
     def start_convert(self):
         if self.busy or self.convert_btn.cget("state") == "disabled":
@@ -1027,7 +1080,7 @@ class App(_Root):
         self._begin_conversion(jobs, target, action, self.out_dir)
 
     def _begin_conversion(self, jobs, target, action, out_dir):
-        if self.busy:
+        if self.busy or self._pending_files:
             return
         if action == "delete" and not show_dialog(
             self, tr("Permanently delete originals"),

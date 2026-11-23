@@ -22,53 +22,56 @@ def _chevron(px: int) -> ctk.CTkImage:
     return ctk.CTkImage(light_image=image, dark_image=image, size=(px, px))
 
 
-class FormatPicker(ctk.CTkFrame):
-    def __init__(self, parent, command, arrow=None, *, height=40, text_font=None):
-        super().__init__(parent, width=140, height=height, fg_color=SURFACE,
-                         border_width=1, border_color=BORDER_H, corner_radius=8)
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
-        self.grid_propagate(False)
+class FormatPicker(ctk.CTkComboBox):
+    def __init__(self, parent, command, *, height=40, text_font=None):
+        self._arrow_icon = _chevron(max(12, height // 2))
+        super().__init__(
+            parent, width=140, height=height, corner_radius=8, border_width=1,
+            fg_color=SURFACE, border_color=BORDER_H, button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER, text_color=TEXT, text_color_disabled=SUB,
+            font=text_font or font(14, "bold"), values=["—"], state="readonly",
+        )
         self.command = command
         self.values = ["—"]
-        self.selected = "—"
         self.state = "normal"
         self._popup = None
         self._previous_grab = None
-        self._button = ctk.CTkButton(
-            self, text="—", command=self._open, width=1, height=height - 8, anchor="w", corner_radius=7,
-            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, text_color_disabled=SUB,
-            font=text_font or font(14, "bold"),
+        self.set("—")
+        # The combobox paints its field, border and arrow on one canvas.
+        self._entry.configure(cursor="hand2", takefocus=1)
+        for sequence in ("<Button-1>", "<Return>", "<space>"):
+            self._entry.bind(sequence, lambda _event: self._open() or "break")
+        self._entry.bind("<FocusIn>", lambda _event: self.configure(border_color=ACCENT_H))
+        self._entry.bind("<FocusOut>", lambda _event: self.configure(border_color=BORDER_H))
+
+    def _draw(self, no_color_updates=False):
+        super()._draw(no_color_updates)
+        # Keep the centered vector chevron instead of the font-based glyph.
+        self._canvas.itemconfigure("dropdown_arrow", state="hidden")
+        self._arrow_photo = self._arrow_icon.create_scaled_photo_image(
+            self._get_widget_scaling(), self._get_appearance_mode(),
         )
-        self._button.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
-        self._arrow = ctk.CTkButton(
-            self, text="", image=arrow or _chevron(max(12, height // 2)), command=self._open, width=height - 8, height=height - 8,
-            corner_radius=7, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+        if not self._canvas.find_withtag("picker_chevron"):
+            self._canvas.create_image(0, 0, image=self._arrow_photo, tags="picker_chevron")
+        self._canvas.itemconfigure("picker_chevron", image=self._arrow_photo)
+        self._canvas.coords(
+            "picker_chevron", self._apply_widget_scaling(self._current_width - self._current_height / 2),
+            self._apply_widget_scaling(self._current_height / 2),
         )
-        self._arrow.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=4)
-        tk.Frame.configure(self, takefocus=1)
-        tk.Frame.bind(self, "<Return>", lambda _event: self._open(), add="+")
-        tk.Frame.bind(self, "<space>", lambda _event: self._open(), add="+")
-        tk.Frame.bind(self, "<FocusIn>", lambda _event: self.configure(border_color=ACCENT_H))
-        tk.Frame.bind(self, "<FocusOut>", lambda _event: self.configure(border_color=BORDER_H))
 
     def configure(self, *, values=None, state=None, **kwargs):
-        super().configure(**kwargs)
         if values is not None:
-            self.values = values
+            self.values = list(values)
+            kwargs["values"] = self.values
         if state is not None:
             self.state = state
-            self._button.configure(state=state)
-            self._arrow.configure(state=state)
-            if state == "disabled":
-                self._dismiss()
+            kwargs["state"] = "disabled" if state == "disabled" else "readonly"
+        super().configure(**kwargs)
+        if state == "disabled":
+            self._dismiss()
 
-    def get(self):
-        return self.selected
-
-    def set(self, value):
-        self.selected = value
-        self._button.configure(text=f"  {value}")
+    def _open_dropdown_menu(self):
+        self._open()
 
     def _open(self):
         if self.state == "disabled":
@@ -101,7 +104,7 @@ class FormatPicker(ctk.CTkFrame):
             items.configure(yscrollcommand=bar.set)
         items.pack(fill="both", expand=True, padx=8, pady=8)
         items.insert("end", *self.values)
-        selected = self.values.index(self.selected) if self.selected in self.values else 0
+        selected = self.values.index(self.get()) if self.get() in self.values else 0
         items.selection_set(selected)
         items.activate(selected)
         items.see(selected)

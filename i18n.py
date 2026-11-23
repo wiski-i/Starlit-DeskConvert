@@ -7,6 +7,8 @@ DEFAULT_LANGUAGE = "tr"
 _language = DEFAULT_LANGUAGE
 
 _TURKISH = {
+    "Loading files…": "Dosyalar yükleniyor…",
+    "Could not read {name}. {reason}": "{name} okunamadı. {reason}",
     "Check GitHub updates at startup": "Açılışta GitHub güncellemelerini kontrol et",
     "A newer GitHub revision is available.": "GitHub’da daha yeni bir sürüm var.",
     "Simultaneous conversions": "Eşzamanlı dönüşüm",
