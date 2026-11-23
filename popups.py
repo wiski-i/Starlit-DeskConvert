@@ -5,28 +5,40 @@ from __future__ import annotations
 import tkinter as tk
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw
 
 from i18n import tr
 from theme import ACCENT, ACCENT_H, ACCENT_HOVER, BG, BORDER_H, PANEL, SUB, SURFACE, SURFACE_H, TEXT, font
 
 
+def _chevron(px: int) -> ctk.CTkImage:
+    """White down chevron; the "⌄" glyph sits below the button's center in Segoe UI."""
+    scale = 4
+    image = Image.new("RGBA", (px * scale, px * scale), (0, 0, 0, 0))
+    unit = px * scale / 24
+    points = [(6 * unit, 9 * unit), (12 * unit, 15 * unit), (18 * unit, 9 * unit)]
+    ImageDraw.Draw(image).line(points, fill="#FFFFFF", width=max(2, round(2 * unit)), joint="curve")
+    image = image.resize((px, px), Image.LANCZOS)
+    return ctk.CTkImage(light_image=image, dark_image=image, size=(px, px))
+
+
 class FormatPicker(ctk.CTkFrame):
-    def __init__(self, parent, command, arrow=None):
+    def __init__(self, parent, command, arrow=None, *, height=40, text_font=None):
         super().__init__(parent, fg_color=SURFACE, corner_radius=11)
         self.command = command
         self.values = ["—"]
         self.selected = "—"
         self.state = "normal"
         self._popup = None
+        self._previous_grab = None
         self._button = ctk.CTkButton(
-            self, text="—", command=self._open, height=40, anchor="w", corner_radius=11,
-            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, font=font(14, "bold"),
+            self, text="—", command=self._open, height=height, anchor="w", corner_radius=min(11, height // 3),
+            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, font=text_font or font(14, "bold"),
         )
         self._button.pack(side="left", fill="x", expand=True)
         self._arrow = ctk.CTkButton(
-            # "⌄" sits below the button's center in Segoe UI; an icon stays centered.
-            self, text="" if arrow else "⌄", image=arrow, command=self._open, width=40, height=40, corner_radius=10,
-            fg_color=ACCENT, hover_color=ACCENT_HOVER, font=font(18, "bold"),
+            self, text="", image=arrow or _chevron(max(12, height // 2)), command=self._open, width=height, height=height,
+            corner_radius=min(10, height // 3), fg_color=ACCENT, hover_color=ACCENT_HOVER,
         )
         self._arrow.pack(side="right")
         tk.Frame.configure(self, takefocus=1)
@@ -98,11 +110,14 @@ class FormatPicker(ctk.CTkFrame):
         if y + height > self.winfo_screenheight() - 40:
             y = self.winfo_rooty() - height - 5
         # The anchor and requested size are already measured in screen pixels.
-        tk.Wm.geometry(popup, f"{self.winfo_width()}x{height}{x:+d}{y:+d}")
+        # "+-1650" keeps a monitor left of the primary; "-1650" would mean "from the right edge".
+        tk.Wm.geometry(popup, f"{self.winfo_width()}x{height}+{x}+{y}")
         popup.bind("<Escape>", lambda _event: self._dismiss())
         popup.bind("<Button-1>", self._outside_click, add="+")
         popup.deiconify()
         popup.wait_visibility()
+        # A modal parent (the presets window) holds the grab; hand it back on dismiss.
+        self._previous_grab = popup.grab_current()
         popup.grab_set()
         items.focus_set()
 
@@ -123,6 +138,9 @@ class FormatPicker(ctk.CTkFrame):
         if self._popup:
             self._popup.destroy()
             self._popup = None
+            previous, self._previous_grab = self._previous_grab, None
+            if previous is not None and previous.winfo_exists():
+                previous.grab_set()
             self.focus_set()
 
 

@@ -9,7 +9,7 @@ import customtkinter as ctk
 
 from engine import presets
 from i18n import tr
-from popups import show_dialog
+from popups import FormatPicker, show_dialog
 from theme import ACCENT, ACCENT_HOVER, BG, BORDER, PANEL, SUB, SURFACE, SURFACE_H, TEXT, font
 
 
@@ -84,10 +84,7 @@ class PresetWindow(ctk.CTkToplevel):
             if choices is None:
                 field = ctk.CTkEntry(editor, textvariable=variable)
             else:
-                field = ctk.CTkOptionMenu(
-                    editor, values=list(choices), variable=variable, fg_color=SURFACE,
-                    button_color=SURFACE_H, button_hover_color=ACCENT,
-                )
+                field = self._picker(editor, choices, variable)
             field.grid(row=row * 2 + 1, column=column, sticky="ew", padx=8)
 
         self.switches = {}
@@ -119,8 +116,9 @@ class PresetWindow(ctk.CTkToplevel):
         footer.grid_configure(row=2)
         ctk.CTkLabel(settings, text=tr("Simultaneous conversions"), text_color=SUB).pack(side="left", padx=10)
         self.parallel = tk.StringVar(self, value=str(preferences.parallel))
-        ctk.CTkOptionMenu(settings, values=[str(n) for n in range(1, 9)], variable=self.parallel,
-                          width=60, fg_color=SURFACE, button_color=SURFACE_H).pack(side="left", pady=7)
+        parallel = self._picker(settings, [str(n) for n in range(1, 9)], self.parallel)
+        parallel.configure(width=76)
+        parallel.pack(side="left", pady=7)
         self.check_updates = tk.BooleanVar(self, value=preferences.check_updates)
         self.copy_outputs = tk.BooleanVar(self, value=preferences.copy_outputs)
         if parent.tk.call("tk", "windowingsystem") == "win32":
@@ -131,6 +129,15 @@ class PresetWindow(ctk.CTkToplevel):
         self.bind("<Escape>", lambda _event: self.destroy())
         self._refresh(0)
         self.after_idle(self.grab_set)
+
+    @staticmethod
+    def _picker(parent, choices, variable):
+        """Themed drop-down bound to a variable; CTkOptionMenu opens the light native menu."""
+        picker = FormatPicker(parent, command=variable.set, height=28, text_font=font(13))
+        picker.configure(values=list(choices))
+        picker.set(variable.get())
+        variable.trace_add("write", lambda *_args: picker.set(variable.get()))
+        return picker
 
     def _button(self, parent, title, command):
         ctk.CTkButton(parent, text=tr(title), command=command, width=64, height=29,
