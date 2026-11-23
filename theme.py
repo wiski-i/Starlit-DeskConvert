@@ -1,7 +1,10 @@
 """Shared burgundy colors and native desktop typography."""
 
-import customtkinter as ctk
+import ctypes
 import sys
+from ctypes import wintypes
+
+import customtkinter as ctk
 
 BG = "#120E16"
 PANEL = "#211823"
@@ -27,13 +30,45 @@ def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
 
 
+def bind_window_frame(window: ctk.CTk) -> None:
+    """Apply the app palette to the native frame when Tk maps it."""
+    if sys.platform != "win32":
+        return
+
+    set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+    set_attribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+    border_color, caption_color, text_color = 34, 35, 36
+    colors = ((border_color, BORDER), (caption_color, BG), (text_color, TEXT))
+
+    def apply(event):
+        if event.widget is not window or _high_contrast_enabled():
+            return
+
+        # Tk's outer frame owns the caption and may be recreated on remapping.
+        frame = int(window.frame(), 0)
+        for attribute, color in colors:
+            value = wintypes.DWORD(int.from_bytes(bytes.fromhex(color[1:]), "little"))
+            set_attribute(frame, attribute, ctypes.byref(value), ctypes.sizeof(value))
+
+    window.bind("<Map>", apply, add="+")
+
+
+def _high_contrast_enabled() -> bool:
+    class HighContrast(ctypes.Structure):
+        _fields_ = (("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p))
+
+    settings = HighContrast(ctypes.sizeof(HighContrast))
+    get_high_contrast, high_contrast_on = 0x0042, 0x0001
+    success = ctypes.windll.user32.SystemParametersInfoW(
+        get_high_contrast, settings.size, ctypes.byref(settings), 0
+    )
+    return bool(success and settings.flags & high_contrast_on)
+
+
 def animations_enabled() -> bool:
     """Respect Windows' animation effects preference."""
     if sys.platform != "win32":
         return False
-    import ctypes
-    from ctypes import wintypes
-
     enabled = wintypes.BOOL()
     get_client_area_animation = 0x1042
     success = ctypes.windll.user32.SystemParametersInfoW(

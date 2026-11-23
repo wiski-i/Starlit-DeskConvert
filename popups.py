@@ -11,7 +11,7 @@ from theme import ACCENT, ACCENT_H, ACCENT_HOVER, BG, BORDER_H, PANEL, SUB, SURF
 
 
 class FormatPicker(ctk.CTkFrame):
-    def __init__(self, parent, command):
+    def __init__(self, parent, command, arrow=None):
         super().__init__(parent, fg_color=SURFACE, corner_radius=11)
         self.command = command
         self.values = ["—"]
@@ -24,7 +24,8 @@ class FormatPicker(ctk.CTkFrame):
         )
         self._button.pack(side="left", fill="x", expand=True)
         self._arrow = ctk.CTkButton(
-            self, text="⌄", command=self._open, width=40, height=40, corner_radius=10,
+            # "⌄" sits below the button's center in Segoe UI; an icon stays centered.
+            self, text="" if arrow else "⌄", image=arrow, command=self._open, width=40, height=40, corner_radius=10,
             fg_color=ACCENT, hover_color=ACCENT_HOVER, font=font(18, "bold"),
         )
         self._arrow.pack(side="right")

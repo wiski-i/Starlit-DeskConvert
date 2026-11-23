@@ -27,7 +27,8 @@ from preset_window import PresetWindow
 from preview_window import PreviewWindow
 from theme import (
     ACCENT, ACCENT_2, ACCENT_H, ACCENT_HOVER, BG, BORDER, BORDER_H,
-    ERR, FAINT, MUTED, OK, PANEL, PANEL_2, SUB, SURFACE, SURFACE_H, TEXT, WARN, font,
+    ERR, FAINT, MUTED, OK, PANEL, PANEL_2, SUB, SURFACE, SURFACE_H, TEXT, WARN,
+    bind_window_frame, font,
 )
 
 try:
@@ -141,6 +142,8 @@ def _draw(name: str, px: int, color: str) -> Image.Image:
         L([(4, 12), (19, 12)]); L([(14, 7), (19, 12), (14, 17)])
     elif name == "check":
         L([(5, 13), (10, 18), (19, 6)])
+    elif name == "chevron":
+        L([(6, 9), (12, 15), (18, 9)])
     elif name == "warn":                         # üçgen + ünlem
         L([(12, 4), (21, 20), (3, 20), (12, 4)])
         L([(12, 10), (12, 15)]); DOT(12, 18, 1.0)
@@ -208,6 +211,42 @@ def make_card(parent, hover=False, **kw):
     return card
 
 
+def autohide_scrollbar(frame: ctk.CTkScrollableFrame) -> None:
+    """Show the scrollbar only while the content is taller than its viewport."""
+    canvas, bar = frame._parent_canvas, frame._scrollbar
+
+    def sync(_event=None):
+        if frame.winfo_reqheight() > canvas.winfo_height():
+            bar.grid()
+        else:
+            bar.grid_remove()
+            canvas.yview_moveto(0)
+
+    frame.bind("<Configure>", sync, add="+")
+    canvas.bind("<Configure>", sync, add="+")
+
+
+class QuietProgress(ctk.CTkProgressBar):
+    """CTk draws a rounded stub at 0%; hide it so an idle bar reads as empty."""
+
+    def __init__(self, *args, progress_color, **kwargs):
+        self._fill = progress_color
+        super().__init__(*args, progress_color=progress_color, **kwargs)
+
+    def set(self, value, from_variable_callback=False):
+        super().set(value, from_variable_callback)
+        self._sync_fill()
+
+    def configure(self, require_redraw=False, **kwargs):
+        super().configure(require_redraw=require_redraw, **kwargs)
+        if "mode" in kwargs:
+            self._sync_fill()
+
+    def _sync_fill(self):
+        visible = self.get() > 0 or self._mode == "indeterminate"
+        super().configure(progress_color=self._fill if visible else self._fg_color)
+
+
 # ════════════════════════════════════════════════════════════════════════
 class App(_Root):
     def __init__(self, paths: list[str] | None = None):
@@ -217,6 +256,7 @@ class App(_Root):
         self.geometry("980x750")
         self.minsize(820, 700)
         self.configure(fg_color=BG)
+        bind_window_frame(self)
         if (ASSETS / "icon.ico").is_file() and sys.platform == "win32":
             self.after(250, self.iconbitmap, str(ASSETS / "icon.ico"))
 
@@ -456,6 +496,7 @@ class App(_Root):
             scrollbar_button_color=SURFACE_H, scrollbar_button_hover_color=BORDER_H,
         )
         self.list.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 12))
+        autohide_scrollbar(self.list)
 
     # ───────────────────────────────────────── hedef + akış
     def _targets_panel(self, root):
@@ -481,7 +522,7 @@ class App(_Root):
         self.src_lbl = ctk.CTkLabel(self.src_chip, text="—", font=font(13, "bold"), text_color=MUTED)
         self.src_lbl.pack(side="left")
         ctk.CTkLabel(flow, text="", image=icon("arrow", 20, ACCENT_2)).pack(side="left", padx=10)
-        self.target = FormatPicker(flow, command=self._target_changed)
+        self.target = FormatPicker(flow, command=self._target_changed, arrow=icon("chevron", 18, "#FFFFFF"))
         self.target.pack(side="left", fill="x", expand=True)
 
         self.route_detail = ctk.CTkLabel(
@@ -533,8 +574,8 @@ class App(_Root):
             state="disabled", command=self._use_output_action,
         )
         self.output_action.grid(row=0, column=1, rowspan=2, padx=11)
-        self.progress = ctk.CTkProgressBar(card, height=5, corner_radius=4,
-                                           progress_color=ACCENT_2, fg_color=SURFACE)
+        self.progress = QuietProgress(card, height=5, corner_radius=4,
+                                      progress_color=ACCENT_2, fg_color=SURFACE)
         self.progress.set(0)
         self.progress.grid(row=1, column=0, sticky="ew", padx=(17, 4), pady=(0, 12))
         self.status = ctk.CTkLabel(card, text=tr("Waiting for files…"), font=font(12),
