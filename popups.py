@@ -8,7 +8,7 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw
 
 from i18n import tr
-from theme import ACCENT, ACCENT_H, ACCENT_HOVER, BG, BORDER_H, PANEL, SUB, SURFACE, SURFACE_H, TEXT, font
+from theme import ACCENT, ACCENT_2, ACCENT_H, ACCENT_HOVER, BG, BORDER_H, PANEL, SUB, SURFACE, SURFACE_H, TEXT, font
 
 
 def _chevron(px: int) -> ctk.CTkImage:
@@ -24,7 +24,11 @@ def _chevron(px: int) -> ctk.CTkImage:
 
 class FormatPicker(ctk.CTkFrame):
     def __init__(self, parent, command, arrow=None, *, height=40, text_font=None):
-        super().__init__(parent, fg_color=SURFACE, corner_radius=11)
+        super().__init__(parent, width=140, height=height, fg_color=SURFACE,
+                         border_width=1, border_color=BORDER_H, corner_radius=8)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.grid_propagate(False)
         self.command = command
         self.values = ["—"]
         self.selected = "—"
@@ -32,20 +36,21 @@ class FormatPicker(ctk.CTkFrame):
         self._popup = None
         self._previous_grab = None
         self._button = ctk.CTkButton(
-            self, text="—", command=self._open, height=height, anchor="w", corner_radius=min(11, height // 3),
-            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, font=text_font or font(14, "bold"),
+            self, text="—", command=self._open, width=1, height=height - 8, anchor="w", corner_radius=7,
+            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, text_color_disabled=SUB,
+            font=text_font or font(14, "bold"),
         )
-        self._button.pack(side="left", fill="x", expand=True)
+        self._button.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
         self._arrow = ctk.CTkButton(
-            self, text="", image=arrow or _chevron(max(12, height // 2)), command=self._open, width=height, height=height,
-            corner_radius=min(10, height // 3), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            self, text="", image=arrow or _chevron(max(12, height // 2)), command=self._open, width=height - 8, height=height - 8,
+            corner_radius=7, fg_color=ACCENT, hover_color=ACCENT_HOVER,
         )
-        self._arrow.pack(side="right")
+        self._arrow.grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=4)
         tk.Frame.configure(self, takefocus=1)
         tk.Frame.bind(self, "<Return>", lambda _event: self._open(), add="+")
         tk.Frame.bind(self, "<space>", lambda _event: self._open(), add="+")
-        tk.Frame.bind(self, "<FocusIn>", lambda _event: self._button.configure(border_width=1, border_color=ACCENT_H))
-        tk.Frame.bind(self, "<FocusOut>", lambda _event: self._button.configure(border_width=0))
+        tk.Frame.bind(self, "<FocusIn>", lambda _event: self.configure(border_color=ACCENT_H))
+        tk.Frame.bind(self, "<FocusOut>", lambda _event: self.configure(border_color=BORDER_H))
 
     def configure(self, *, values=None, state=None, **kwargs):
         super().configure(**kwargs)
@@ -76,19 +81,25 @@ class FormatPicker(ctk.CTkFrame):
         popup.withdraw()
         popup.overrideredirect(True)
         popup.configure(fg_color=BG)
+        if popup.tk.call("tk", "windowingsystem") == "win32":
+            # Hide the top-level rectangle outside the rounded shell.
+            popup.attributes("-transparentcolor", BG)
         popup.transient(self.winfo_toplevel())
         shell = ctk.CTkFrame(popup, fg_color=PANEL, border_color=BORDER_H, border_width=1, corner_radius=11)
         shell.pack(fill="both", expand=True)
         items = tk.Listbox(
             shell, height=min(11, len(self.values)), bg=PANEL, fg=TEXT,
             selectbackground=SURFACE_H, selectforeground=TEXT, activestyle="none",
-            relief="flat", highlightthickness=0, exportselection=False, font=("Segoe UI", 11),
+            relief="flat", borderwidth=0, highlightthickness=0, exportselection=False, font=("Segoe UI", 11),
         )
         if len(self.values) > 11:
-            bar = ctk.CTkScrollbar(shell, command=items.yview)
-            bar.pack(side="right", fill="y", pady=6)
+            bar = ctk.CTkScrollbar(
+                shell, command=items.yview, width=14, fg_color=PANEL,
+                button_color=BORDER_H, button_hover_color=ACCENT_2,
+            )
+            bar.pack(side="right", fill="y", padx=(0, 6), pady=8)
             items.configure(yscrollcommand=bar.set)
-        items.pack(fill="both", expand=True, padx=6, pady=6)
+        items.pack(fill="both", expand=True, padx=8, pady=8)
         items.insert("end", *self.values)
         selected = self.values.index(self.selected) if self.selected in self.values else 0
         items.selection_set(selected)

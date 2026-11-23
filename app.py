@@ -491,7 +491,7 @@ class App(_Root):
 
         self.list = ctk.CTkScrollableFrame(
             card, fg_color="transparent", corner_radius=0, height=145,
-            scrollbar_button_color=SURFACE_H, scrollbar_button_hover_color=BORDER_H,
+            scrollbar_button_color=BORDER_H, scrollbar_button_hover_color=ACCENT_2,
         )
         self.list.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 12))
         autohide_scrollbar(self.list)

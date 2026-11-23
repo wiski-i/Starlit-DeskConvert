@@ -11,7 +11,7 @@ from engine import presets
 from i18n import tr
 from popups import FormatPicker, show_dialog
 from theme import (
-    ACCENT, ACCENT_HOVER, BG, BORDER, PANEL, SUB, SURFACE, SURFACE_H, TEXT, bind_window_frame, font,
+    ACCENT, ACCENT_2, ACCENT_HOVER, BG, BORDER, BORDER_H, PANEL, SUB, SURFACE, SURFACE_H, TEXT, bind_window_frame, font,
 )
 
 
@@ -31,7 +31,7 @@ class PresetWindow(ctk.CTkToplevel):
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        sidebar = ctk.CTkFrame(self, fg_color=PANEL)
+        sidebar = ctk.CTkFrame(self, fg_color=PANEL, border_width=1, border_color=BORDER)
         sidebar.grid(row=0, column=0, sticky="nsew", padx=(18, 8), pady=(18, 8))
         ctk.CTkLabel(sidebar, text=tr("Presets"), font=font(17, "bold"), text_color=TEXT).pack(
             anchor="w", padx=12, pady=(12, 7),
@@ -41,26 +41,38 @@ class PresetWindow(ctk.CTkToplevel):
         self.list = tk.Listbox(
             list_frame, width=31, bg=SURFACE, fg=TEXT, selectbackground=ACCENT,
             selectforeground=TEXT, font=("Segoe UI", 10), relief="flat", activestyle="none",
-            highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT, exportselection=False,
+            highlightthickness=1, highlightbackground=BORDER_H, highlightcolor=ACCENT_2, exportselection=False,
         )
-        scrollbar = ctk.CTkScrollbar(list_frame, command=self.list.yview)
+        scrollbar = ctk.CTkScrollbar(
+            list_frame, command=self.list.yview, width=14, fg_color=PANEL,
+            button_color=BORDER_H, button_hover_color=ACCENT_2,
+        )
         scrollbar.pack(side="right", fill="y")
         self.list.configure(yscrollcommand=scrollbar.set)
         self.list.pack(fill="both", expand=True)
         self.list.bind("<<ListboxSelect>>", self._selected)
         actions = ctk.CTkFrame(sidebar, fg_color="transparent")
-        actions.pack(fill="x", padx=7, pady=7)
-        self._button(actions, "New", lambda: self._new(False))
-        self._button(actions, "Duplicate", lambda: self._new(True))
-        self._button(actions, "Remove", self._remove)
+        actions.pack(fill="x", padx=10, pady=8)
+        actions.columnconfigure((0, 1, 2), weight=1, uniform="actions")
+        for column, (title, command) in enumerate((
+            ("New", lambda: self._new(False)), ("Duplicate", lambda: self._new(True)), ("Remove", self._remove),
+        )):
+            self._button(actions, title, command).grid(
+                row=0, column=column, sticky="ew", padx=(0, 6 if column < 2 else 0),
+            )
         order = ctk.CTkFrame(sidebar, fg_color="transparent")
-        order.pack(fill="x", padx=7, pady=(0, 8))
-        self._button(order, "Move up", lambda: self._move(-1))
-        self._button(order, "Move down", lambda: self._move(1))
+        order.pack(fill="x", padx=10, pady=(0, 10))
+        order.columnconfigure((0, 1), weight=1, uniform="order")
+        self._button(order, "Move up", lambda: self._move(-1)).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._button(order, "Move down", lambda: self._move(1)).grid(row=0, column=1, sticky="ew")
 
-        editor = ctk.CTkScrollableFrame(self, fg_color=PANEL)
+        editor = ctk.CTkScrollableFrame(
+            self, fg_color=PANEL, border_width=1, border_color=BORDER,
+            scrollbar_fg_color=PANEL, scrollbar_button_color=BORDER_H,
+            scrollbar_button_hover_color=ACCENT_2,
+        )
         editor.grid(row=0, column=1, sticky="nsew", padx=(8, 18), pady=(18, 8))
-        editor.columnconfigure((0, 1), weight=1)
+        editor.columnconfigure((0, 1), weight=1, uniform="fields")
         sections = [
             ("Name", "name", None), ("Menu group", "group", None),
             ("Output format", "target", presets.TARGETS), ("Input extensions", "inputs", None),
@@ -85,11 +97,20 @@ class PresetWindow(ctk.CTkToplevel):
             variable = tk.StringVar(self)
             self.fields[key] = variable
             if choices is None:
-                field = ctk.CTkEntry(editor, textvariable=variable)
+                field = ctk.CTkEntry(
+                    editor, textvariable=variable, width=1, height=32, corner_radius=8,
+                    fg_color=SURFACE, border_color=BORDER_H, border_width=1,
+                    text_color=TEXT, font=font(13),
+                )
             else:
                 field = self._picker(editor, choices, variable)
             field.grid(row=row * 2 + 1, column=column, sticky="ew", padx=8)
 
+        checkbox_style = dict(
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, border_color=BORDER_H,
+            checkmark_color=TEXT, text_color=TEXT, font=font(12),
+            checkbox_width=22, checkbox_height=22, corner_radius=6,
+        )
         self.switches = {}
         first_switch = 2 * ((len(sections) + 1) // 2)
         for index, (label, key) in enumerate((("Enabled", "enabled"),
@@ -98,7 +119,7 @@ class PresetWindow(ctk.CTkToplevel):
             row, column = divmod(index, 2)
             variable = tk.BooleanVar(self)
             self.switches[key] = variable
-            ctk.CTkCheckBox(editor, text=tr(label), variable=variable).grid(
+            ctk.CTkCheckBox(editor, text=tr(label), variable=variable, **checkbox_style).grid(
                 row=first_switch + row, column=column, sticky="w", padx=8, pady=8,
             )
         ctk.CTkLabel(
@@ -109,26 +130,39 @@ class PresetWindow(ctk.CTkToplevel):
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
-        self._button(footer, "Restore defaults", self._restore)
-        ctk.CTkButton(footer, text=tr("Save"), fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=self._save).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(footer, text=tr("Cancel"), fg_color=SURFACE, hover_color=SURFACE_H,
-                      command=self.destroy).pack(side="right")
-        settings = ctk.CTkFrame(self, fg_color=PANEL)
+        self._button(footer, "Restore defaults", self._restore).pack(side="left")
+        ctk.CTkButton(
+            footer, text=tr("Save"), command=self._save, height=32, text_color=TEXT,
+            font=font(13), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            footer, text=tr("Cancel"), command=self.destroy, height=32, text_color=TEXT,
+            font=font(13), fg_color=SURFACE, hover_color=SURFACE_H,
+        ).pack(side="right")
+        settings = ctk.CTkFrame(self, fg_color=PANEL, border_width=1, border_color=BORDER)
         settings.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 8))
+        settings.columnconfigure((0, 1), weight=1, uniform="settings")
         footer.grid_configure(row=2)
-        ctk.CTkLabel(settings, text=tr("Simultaneous conversions"), text_color=SUB).pack(side="left", padx=10)
+        parallel_row = ctk.CTkFrame(settings, fg_color="transparent")
+        parallel_row.grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(10, 6))
+        ctk.CTkLabel(parallel_row, text=tr("Simultaneous conversions"), text_color=SUB, font=font(12)).pack(
+            side="left", padx=(0, 10),
+        )
         self.parallel = tk.StringVar(self, value=str(preferences.parallel))
-        parallel = self._picker(settings, [str(n) for n in range(1, 9)], self.parallel)
+        parallel = self._picker(parallel_row, [str(n) for n in range(1, 9)], self.parallel)
         parallel.configure(width=76)
-        parallel.pack(side="left", pady=7)
+        parallel.pack(side="left")
         self.check_updates = tk.BooleanVar(self, value=preferences.check_updates)
         self.copy_outputs = tk.BooleanVar(self, value=preferences.copy_outputs)
         if parent.tk.call("tk", "windowingsystem") == "win32":
             ctk.CTkCheckBox(settings, text=tr("Copy converted files to clipboard"),
-                            variable=self.copy_outputs).pack(side="left", padx=14)
+                            variable=self.copy_outputs, **checkbox_style).grid(
+                row=1, column=0, sticky="w", padx=12, pady=(0, 10),
+            )
         ctk.CTkCheckBox(settings, text=tr("Check GitHub updates at startup"),
-                        variable=self.check_updates).pack(side="left", padx=12)
+                        variable=self.check_updates, **checkbox_style).grid(
+            row=1, column=1, sticky="w", padx=12, pady=(0, 10),
+        )
         self.bind("<Escape>", lambda _event: self.destroy())
         self._refresh(0)
         self.after_idle(self.grab_set)
@@ -136,15 +170,17 @@ class PresetWindow(ctk.CTkToplevel):
     @staticmethod
     def _picker(parent, choices, variable):
         """Themed drop-down bound to a variable; CTkOptionMenu opens the light native menu."""
-        picker = FormatPicker(parent, command=variable.set, height=28, text_font=font(13))
+        picker = FormatPicker(parent, command=variable.set, height=32, text_font=font(13))
         picker.configure(values=list(choices))
         picker.set(variable.get())
         variable.trace_add("write", lambda *_args: picker.set(variable.get()))
         return picker
 
     def _button(self, parent, title, command):
-        ctk.CTkButton(parent, text=tr(title), command=command, width=64, height=29,
-                      fg_color=SURFACE, hover_color=SURFACE_H).pack(side="left", padx=3)
+        return ctk.CTkButton(
+            parent, text=tr(title), command=command, width=64, height=32, corner_radius=8,
+            fg_color=SURFACE, hover_color=SURFACE_H, text_color=TEXT, font=font(12),
+        )
 
     def _refresh(self, index):
         self.list.delete(0, "end")
